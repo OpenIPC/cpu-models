@@ -1,6 +1,6 @@
 # Merge gate for the Qodo code-review agent.
 #
-# Copied from OpenIPC/xmnpu-models', which has it from OpenIPC/firmware (and that
+# Copied from OpenIPC/xmnpu-models, which has it from OpenIPC/firmware (and that
 # from OpenIPC/devourer): through the failure modes documented below, with three fixes
 # found reviewing the copy: the bot is matched by exact login and account type,
 # not prefix; every unresolved thread blocks, not only those still carrying a
