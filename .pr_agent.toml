@@ -1,0 +1,45 @@
+# Qodo code-review configuration. Every pull request is reviewed, and the
+# qodo-gate workflow keeps it unmergeable until that review exists and every
+# review thread is resolved.
+#
+# Reference: https://docs.qodo.ai/install-and-configure/configuration-overview/configuration-file
+
+[github_app]
+pr_commands = [
+    "/agentic_describe",
+    "/agentic_review",
+]
+
+[review_agent]
+comments_location_policy = "both"
+
+# 1 = all severities inline, 2 = high+medium, 3 = high only.
+inline_comments_severity_threshold = 2
+
+issues_user_guidelines = """
+OpenIPC/cpu-models builds the detection models OpenIPC cameras run on their CPU, and the
+release that publishes them; the firmware downloads them by hash, and majestic runs them
+with its own int8 engine. A model that is wrong does not fail to build: it ships, and
+cameras quietly detect worse.
+
+Prioritise, in order:
+
+1. Exactness. The published blob must compute what the quantized model defines: the
+   reference arithmetic (pdq.py) and the C engine must agree bit for bit, and the release
+   must check that before it measures or publishes anything. A change to either side that
+   is not shown to keep them equal is a finding.
+
+2. Reproducibility. Every input pinned by URL and sha256; a build of one commit gives the
+   same bytes anywhere. Release assets come only from the release workflow, run by hand;
+   no check that runs on a pull request or a push may publish.
+
+3. Evidence for model quality. A change to the model, its quantization, the engine's
+   arithmetic or the evaluation must show the measured result (precision, recall, F1 per
+   preset), not describe it. Timings count only when measured on camera hardware.
+
+4. Provenance and licence. Weights and data come from documented sources compatible with
+   the MIT licence of this repository.
+
+Do not report: speculation about whether a change was written with AI assistance, or
+style preferences that do not change behaviour.
+"""
