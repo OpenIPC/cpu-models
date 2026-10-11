@@ -40,6 +40,9 @@ def main(coco, out, n_person=2000, n_bg=1000):
     for a in ann["annotations"]:
         if a["category_id"] == 1:
             people.setdefault(a["image_id"], []).append(a)
+    # A directory holding crops from another run would mix them in.
+    if os.path.isdir(f"{out}/crops") and os.listdir(f"{out}/crops"):
+        sys.exit(f"crops.py: {out}/crops is not empty")
     os.makedirs(f"{out}/crops", exist_ok=True)
     labels = {}
 

@@ -20,11 +20,13 @@ cache=$src/.cache
 mkdir -p "$out" "$cache"
 
 bash "$src/scripts/fetch.sh" "$src/coco.txt" "$cache"
+# Extracted fresh every build, from the archives just hash-checked: files left
+# in a reused output directory are not what was pinned.
 coco=$out/coco
+rm -rf "$coco" "$out/eval"
 mkdir -p "$coco"
-[ -d "$coco/val2017" ] || unzip -qo -d "$coco" "$cache/val2017.zip"
-[ -f "$coco/annotations/instances_val2017.json" ] ||
-	unzip -qo -d "$coco" "$cache/annotations_trainval2017.zip" annotations/instances_val2017.json
+unzip -qo -d "$coco" "$cache/val2017.zip"
+unzip -qo -d "$coco" "$cache/annotations_trainval2017.zip" annotations/instances_val2017.json
 
 python3 "$src/tools/export_pdnet.py" "$src/models/person/model.onnx" "$out/person.pdnet"
 
