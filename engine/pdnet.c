@@ -803,12 +803,12 @@ int pdnet_detect(
                 const int s = (int)(sigmoidf(tc->f[i]) * 100.0f + 0.5f);
                 if (s < score_min || nc == (int)(sizeof(cand) / sizeof(cand[0])))
                     continue;
-                /* Distances bounded before they become ints: whatever a
-                 * model's heads say, a box edge must fit one. 1024 strides
-                 * is far past any real box. */
+                /* Distances bounded before they become ints, and only there:
+                 * at a stride of at most 64, 1e6 strides keeps every edge
+                 * inside an int, and no box that fits one is changed. */
                 float r[4];
                 for (int s4 = 0; s4 < 4; s4++)
-                    r[s4] = fminf(fmaxf(0.0f, tr->f[(size_t)i * 4 + s4]), 1024.0f);
+                    r[s4] = fminf(fmaxf(0.0f, tr->f[(size_t)i * 4 + s4]), 1e6f);
                 const float ccx = (cx + 0.5f) * st, ccy = (cy + 0.5f) * st;
                 const int x0 = (int)(ccx - r[0] * st);
                 const int y0 = (int)(ccy - r[1] * st);
