@@ -31,7 +31,9 @@
 # run), so plain thread resolution does not auto-retrigger — after resolving
 # the last thread, leave a reply (retriggers); the check reads the live
 # resolution state each run. Escape hatch for a Qodo outage: the
-# `skip-qodo-gate` label passes the check (label changes re-trigger it).
+# `skip-qodo-gate` label passes the check (label changes re-trigger it). On a
+# pull request from a fork the token is read-only, so the sweep below cannot
+# re-run the earlier red run; it warns, and a maintainer re-runs it by hand.
 #
 # A passing run also re-runs this workflow's earlier FAILED runs on the same
 # head commit. Each trigger event creates its own workflow run, and branch
@@ -267,6 +269,10 @@ jobs:
           for id in $ids; do
             [ "$id" = "$THIS_RUN" ] && continue
             echo "re-running failed qodo-gate run $id"
-            gh run rerun "$id" --repo "$REPO" --failed || true
+            # A pull request from a fork runs with a read-only token, which
+            # cannot re-run anything: say so where a maintainer will see it,
+            # rather than leave a red check nobody knows to re-run by hand.
+            gh run rerun "$id" --repo "$REPO" --failed ||
+              echo "::warning::could not re-run qodo-gate run $id (a fork's read-only token?); re-run it by hand"
           done
           exit 0
