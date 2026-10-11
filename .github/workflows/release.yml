@@ -1,0 +1,63 @@
+# Builds the person model and publishes it as a release. Run by hand
+# (Actions -> release -> Run workflow) and only that way: release assets are
+# never uploaded from a workstation or by any check that runs on a pull
+# request or a push, so each one traces to the commit and run that built it.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to create (e.g. v1). Must not exist yet.
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Dependencies
+        run: |
+          pip install -q -r requirements.txt
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-arm-linux-gnueabihf qemu-user-static >/dev/null
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache
+          key: coco-${{ hashFiles('coco.txt') }}
+
+      - name: Build, check and measure
+        run: bash scripts/build.sh out
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          {
+            echo "Built by run ${{ github.run_id }} from ${{ github.sha }}."
+            echo
+            echo "\`person.pdnet\` is the int8 person detector majestic's CPU engine loads;"
+            echo "\`person.json\`, installed beside it, is what its three object-detection"
+            echo "presets mean for this model. Both the host engine and its ARMv7 NEON"
+            echo "build were checked bit for bit against the reference arithmetic before"
+            echo "anything was measured. Measured on labelled crops of COCO val2017:"
+            echo
+            cat out/points.md
+          } > notes.md
+          gh release create "$TAG" --target "${{ github.sha }}" --title "$TAG" \
+            --notes-file notes.md out/person.pdnet out/person.json out/SHA256SUMS out/points.md
