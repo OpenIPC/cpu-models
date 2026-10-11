@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
 #include "pdnet.h"
 
 #include <math.h>
@@ -18,16 +17,18 @@
 #define MAX_LEVELS 3
 #define NMS_IOU 0.55f
 
-#ifdef PDNET_PROFILE
-#include <time.h>
-double pdnet_prof_us[MAX_OPS];
-void pdnet_profile_dump(const PdNet *n, int runs);
-#endif
+/* A blob's activations, all tensors together, may not ask for more than
+ * this: the real network's are a few hundred KB, and a camera has a
+ * hundred-odd MB for everything. */
+#define MAX_ACTIVATION_BYTES (8u << 20)
 
 enum { OP_CONV = 1, OP_RESIZE2X = 2, OP_ADD = 3 };
 
+enum { T_NONE = 0, T_INT8, T_FLOAT };
+
 typedef struct {
     int h, w, c;
+    int kind;    /* T_INT8 or T_FLOAT once something produces it */
     int8_t *q;   /* int8 activation, HWC */
     float *f;    /* float head output, HWC */
 } Tensor;
@@ -115,6 +116,21 @@ static float f32(Rd *r) {
 
 static bool tensor_ok(const PdNet *n, uint32_t i) { return i < (uint32_t)n->n_t; }
 
+static bool zp_ok(int32_t zp) { return zp >= -128 && zp <= 127; }
+
+/* What requant() can shift by without undefined behaviour. */
+static bool shift_ok(int32_t shift) { return shift >= -31 && shift <= 30; }
+
+/* An op reads only tensors something earlier produced as int8, and writes a
+ * tensor nothing has written yet: the order is the execution order, and every
+ * buffer is read as what it is. */
+static bool reads_int8(const PdNet *n, uint32_t i) {
+    return tensor_ok(n, i) && n->t[i].kind == T_INT8;
+}
+static bool writes_new(const PdNet *n, uint32_t i) {
+    return tensor_ok(n, i) && n->t[i].kind == T_NONE;
+}
+
 static bool parse(PdNet *n, Rd *r) {
     const void *m = take(r, 8);
     if (!m || memcmp(m, PDNET_MAGIC, 8) || u32(r) != 1)
@@ -123,8 +139,9 @@ static bool parse(PdNet *n, Rd *r) {
     n->in_h = (int)u32(r);
     const float in_scale = f32(r);
     const int32_t in_zp = i32(r);
+    /* Even: NV21 carries chroma for pixel pairs and row pairs. */
     if (r->bad || n->in_w <= 0 || n->in_w > 4096 || n->in_h <= 0 || n->in_h > 4096 ||
-        !(in_scale > 0))
+        (n->in_w & 1) || (n->in_h & 1) || !(in_scale > 0) || !zp_ok(in_zp))
         return false;
     /* The frame's bytes to the network's int8 input, as the float model's
      * preprocessing defines it: Y from BT.709 limited range to -1..1, U and
@@ -139,6 +156,7 @@ static bool parse(PdNet *n, Rd *r) {
     n->n_t = (int)u32(r);
     if (r->bad || n->n_t <= 0 || n->n_t > MAX_TENSORS)
         return false;
+    uint64_t total = 0;
     for (int i = 0; i < n->n_t; i++) {
         n->t[i].h = (int)u32(r);
         n->t[i].w = (int)u32(r);
@@ -146,7 +164,13 @@ static bool parse(PdNet *n, Rd *r) {
         if (r->bad || n->t[i].h <= 0 || n->t[i].h > 4096 || n->t[i].w <= 0 ||
             n->t[i].w > 4096 || n->t[i].c <= 0 || n->t[i].c > 4096)
             return false;
+        /* Each dimension bounded is not enough: their product is 2^36. Count
+         * every tensor as float, the larger of its two possible storages. */
+        total += (uint64_t)n->t[i].h * n->t[i].w * n->t[i].c * sizeof(float);
+        if (total > MAX_ACTIVATION_BYTES)
+            return false;
     }
+    n->t[0].kind = T_INT8; /* the input, which pdnet_detect() fills */
     n->n_ops = (int)u32(r);
     if (r->bad || n->n_ops <= 0 || n->n_ops > MAX_OPS)
         return false;
@@ -158,15 +182,19 @@ static bool parse(PdNet *n, Rd *r) {
             o->out = (int)u32(r);
             o->k = (int)u32(r);
             o->stride = (int)u32(r);
-            o->pad = (int)u32(r);
+            const uint32_t pad = u32(r);
+            o->pad = pad < 8 ? (int)pad : 8;
             o->dw = (int)u32(r);
             o->cin = (int)u32(r);
             o->cout = (int)u32(r);
             o->float_out = (int)u32(r);
             o->in_zp = i32(r);
             o->out_zp = i32(r);
-            if (r->bad || !tensor_ok(n, o->in) || !tensor_ok(n, o->out) || o->k < 1 ||
-                o->k > 7 || o->stride < 1 || o->stride > 4 || o->pad > o->k)
+            /* A 1x1 is a plain per-pixel multiply: no stride, no padding. */
+            if (r->bad || !reads_int8(n, o->in) || !writes_new(n, o->out) || o->k < 1 ||
+                o->k > 7 || o->stride < 1 || o->stride > 4 || o->pad >= o->k ||
+                (o->k == 1 && o->stride != 1) || !zp_ok(o->in_zp) || !zp_ok(o->out_zp) ||
+                (o->float_out != 0 && o->float_out != 1) || (o->dw != 0 && o->dw != 1))
                 return false;
             const Tensor *ti = &n->t[o->in], *to = &n->t[o->out];
             if (ti->c != o->cin || to->c != o->cout || (o->dw && o->cin != o->cout) ||
@@ -185,19 +213,19 @@ static bool parse(PdNet *n, Rd *r) {
             if (r->bad)
                 return false;
             if (!o->float_out)
-                for (int c = 0; c < o->cout; c++) {
-                    const int32_t sh = o->ms[2 * c + 1];
-                    if (sh > 30 || sh < -31)
+                for (int c = 0; c < o->cout; c++)
+                    if (!shift_ok(o->ms[2 * c + 1]))
                         return false;
-                }
+            n->t[o->out].kind = o->float_out ? T_FLOAT : T_INT8;
         } else if (o->type == OP_RESIZE2X) {
             o->in = (int)u32(r);
             o->out = (int)u32(r);
-            if (r->bad || !tensor_ok(n, o->in) || !tensor_ok(n, o->out))
+            if (r->bad || !reads_int8(n, o->in) || !writes_new(n, o->out))
                 return false;
             const Tensor *ti = &n->t[o->in], *to = &n->t[o->out];
             if (to->h != 2 * ti->h || to->w != 2 * ti->w || to->c != ti->c)
                 return false;
+            n->t[o->out].kind = T_INT8;
         } else if (o->type == OP_ADD) {
             o->in = (int)u32(r);
             o->in2 = (int)u32(r);
@@ -206,13 +234,16 @@ static bool parse(PdNet *n, Rd *r) {
             o->m_a = i32(r); o->s_a = i32(r);
             o->m_b = i32(r); o->s_b = i32(r);
             o->m_o = i32(r); o->s_o = i32(r);
-            if (r->bad || !tensor_ok(n, o->in) || !tensor_ok(n, o->in2) ||
-                !tensor_ok(n, o->out))
+            if (r->bad || !reads_int8(n, o->in) || !reads_int8(n, o->in2) ||
+                !writes_new(n, o->out) || !zp_ok(o->zp_a) || !zp_ok(o->zp_b) ||
+                !zp_ok(o->zp_o) || !shift_ok(o->s_a) || !shift_ok(o->s_b) ||
+                !shift_ok(o->s_o))
                 return false;
             const Tensor *a = &n->t[o->in], *b = &n->t[o->in2], *to = &n->t[o->out];
             if (a->h != b->h || a->w != b->w || a->c != b->c || to->h != a->h ||
                 to->w != a->w || to->c != a->c)
                 return false;
+            n->t[o->out].kind = T_INT8;
         } else {
             return false;
         }
@@ -224,8 +255,13 @@ static bool parse(PdNet *n, Rd *r) {
         n->lv[i].stride = (int)u32(r);
         n->lv[i].cls = (int)u32(r);
         n->lv[i].reg = (int)u32(r);
-        if (r->bad || !tensor_ok(n, n->lv[i].cls) || !tensor_ok(n, n->lv[i].reg) ||
-            n->t[n->lv[i].cls].c != 1 || n->t[n->lv[i].reg].c != 4)
+        if (r->bad || !tensor_ok(n, n->lv[i].cls) || !tensor_ok(n, n->lv[i].reg))
+            return false;
+        /* Both float, as the decode reads them, on the same grid. */
+        const Tensor *tc = &n->t[n->lv[i].cls], *tr = &n->t[n->lv[i].reg];
+        const int st = n->lv[i].stride;
+        if (tc->kind != T_FLOAT || tr->kind != T_FLOAT || tc->c != 1 || tr->c != 4 ||
+            tc->h != tr->h || tc->w != tr->w || st < 1 || st > 64)
             return false;
     }
     return !r->bad && n->t[0].h == n->in_h && n->t[0].w == n->in_w && n->t[0].c == 3;
@@ -286,14 +322,10 @@ PdNet *pdnet_open(const char *path) {
             bool ok = true;
             for (int i = 0; ok && i < n->n_t; i++) {
                 const size_t e = (size_t)n->t[i].h * n->t[i].w * n->t[i].c;
-                bool is_float = false;
-                for (int j = 0; j < n->n_ops; j++)
-                    if (n->op[j].type == OP_CONV && n->op[j].out == i && n->op[j].float_out)
-                        is_float = true;
-                if (is_float)
+                if (n->t[i].kind == T_FLOAT)
                     ok = (n->t[i].f = malloc(e * sizeof(float))) != NULL;
                 else
-                    ok = (n->t[i].q = malloc(e)) != NULL;
+                    ok = (n->t[i].q = calloc(e, 1)) != NULL;
             }
             int max_c = 0;
             for (int j = 0; j < n->n_ops; j++)
@@ -727,15 +759,9 @@ int pdnet_detect(
             p[3 * i + 2] = n->lut_c[cr[ci]];     /* V */
         }
     }
-#ifdef PDNET_PROFILE
-    struct timespec t0, t1;
-#endif
     for (int j = 0; j < n->n_ops; j++) {
         const Op *o = &n->op[j];
         Tensor *to = &n->t[o->out];
-#ifdef PDNET_PROFILE
-        clock_gettime(CLOCK_MONOTONIC, &t0);
-#endif
         if (o->type == OP_CONV) {
             const Tensor *ti = &n->t[o->in];
 #ifdef PDNET_NEON
@@ -762,10 +788,6 @@ int pdnet_detect(
         } else {
             add(o, &n->t[o->in], &n->t[o->in2], to);
         }
-#ifdef PDNET_PROFILE
-        clock_gettime(CLOCK_MONOTONIC, &t1);
-        pdnet_prof_us[j] += (t1.tv_sec - t0.tv_sec) * 1e6 + (t1.tv_nsec - t0.tv_nsec) / 1e3;
-#endif
     }
 
     /* Decode as the TVM shim did: an anchor-free head, a box per cell whose
@@ -781,12 +803,17 @@ int pdnet_detect(
                 const int s = (int)(sigmoidf(tc->f[i]) * 100.0f + 0.5f);
                 if (s < score_min || nc == (int)(sizeof(cand) / sizeof(cand[0])))
                     continue;
-                const float *r = tr->f + (size_t)i * 4;
+                /* Distances bounded before they become ints, and only there:
+                 * at a stride of at most 64, 1e6 strides keeps every edge
+                 * inside an int, and no box that fits one is changed. */
+                float r[4];
+                for (int s4 = 0; s4 < 4; s4++)
+                    r[s4] = fminf(fmaxf(0.0f, tr->f[(size_t)i * 4 + s4]), 1e6f);
                 const float ccx = (cx + 0.5f) * st, ccy = (cy + 0.5f) * st;
-                const int x0 = (int)(ccx - fmaxf(0.0f, r[0]) * st);
-                const int y0 = (int)(ccy - fmaxf(0.0f, r[1]) * st);
-                const int x1 = (int)(ccx + fmaxf(0.0f, r[2]) * st);
-                const int y1 = (int)(ccy + fmaxf(0.0f, r[3]) * st);
+                const int x0 = (int)(ccx - r[0] * st);
+                const int y0 = (int)(ccy - r[1] * st);
+                const int x1 = (int)(ccx + r[2] * st);
+                const int y1 = (int)(ccy + r[3] * st);
                 if (x1 <= x0 || y1 <= y0)
                     continue;
                 cand[nc++] = (PdBox){x0, y0, x1 - x0, y1 - y0, s};
@@ -813,24 +840,3 @@ const float *pdnet_head(const PdNet *n, int level, int reg, int *h, int *w) {
     return t->f;
 }
 
-#ifdef PDNET_PROFILE
-void pdnet_profile_dump(const PdNet *n, int runs) {
-    double total = 0;
-    for (int j = 0; j < n->n_ops; j++)
-        total += pdnet_prof_us[j];
-    for (int j = 0; j < n->n_ops; j++) {
-        const Op *o = &n->op[j];
-        const Tensor *to = &n->t[o->out];
-        const char *kind = o->type == OP_RESIZE2X ? "resize" : o->type == OP_ADD ? "add"
-                         : o->dw ? "dw" : o->k == 1 ? "1x1" : "kxk";
-        long macs = 0;
-        if (o->type == OP_CONV)
-            macs = (long)to->h * to->w * o->cout * o->k * o->k * (o->dw ? 1 : o->cin);
-        fprintf(stderr, "op %2d %-6s k%d s%d %3d->%3d out %3dx%3d  %7.2f ms  %5.1f%%  %6.1f MMAC/s\n",
-                j, kind, o->k, o->stride, o->cin, o->cout, to->h, to->w,
-                pdnet_prof_us[j] / runs / 1e3, 100 * pdnet_prof_us[j] / total,
-                macs ? macs / (pdnet_prof_us[j] / runs) : 0.0);
-    }
-    fprintf(stderr, "total %.2f ms per run\n", total / runs / 1e3);
-}
-#endif
