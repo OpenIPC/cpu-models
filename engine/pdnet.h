@@ -1,11 +1,13 @@
 #pragma once
 
-/* pdnet: the CPU person detector's int8 network, run directly.
+/* pdnet: an int8 network for the camera's CPU, run directly.
  *
- * Loads the blob export_pdnet.py writes from the quantized model and runs it
- * on an NV21 frame of the network's input size: int8 activations, per-channel
- * int8 weights, int32 accumulators, one rounding per requantization, and the
- * detection heads taken to float straight from their accumulators. */
+ * Loads the blob export_pdnet.py writes from a quantized model: int8
+ * activations, per-channel int8 weights, int32 accumulators, one rounding per
+ * requantization, and the heads taken to float straight from their
+ * accumulators. A blob is one of two kinds, and each entry point refuses the
+ * other: a detector (the person detector, an NV21 frame in, pdnet_detect) or
+ * a classifier (a luma crop in, its outputs out, pdnet_classify). */
 
 #include <stddef.h>
 #include <stdint.h>
@@ -32,3 +34,12 @@ int pdnet_detect(
 /* The raw head outputs of the last pdnet_detect(), for checking against the
  * reference: level 0..2, cls (1 channel) or reg (4), HWC float. */
 const float *pdnet_head(const PdNet *n, int level, int reg, int *h, int *w);
+
+/* Classify one luma crop of exactly pdnet_width() x pdnet_height(): the
+ * network's outputs (a classifier's logits), at most `max` of them, in
+ * order. Returns how many, or -1. */
+int pdnet_classify(PdNet *n, const uint8_t *y, int ystride, float *out, int max);
+
+/* The int8 input the last run was given, HWC: for checking against the
+ * reference. */
+const int8_t *pdnet_input(const PdNet *n);

@@ -7,8 +7,8 @@
 #
 # The network is built from what majestic's int8 engine runs (engine/pdnet.c):
 # 3x3 convolutions, depthwise 3x3, 1x1, ReLU; its last layer is a convolution
-# the size of the last map, which is a fully connected layer the engine needs
-# no new op for. 20 classes, a half digit each. A drum between two half steps
+# the size of the last (2x2) map, which is a fully connected layer the engine
+# needs no new op for. 20 classes, a half digit each. A drum between two half steps
 # is taught as both, in proportion, so 2.3 is mostly "2.5" and some "2".
 #
 # Each crop is standardised by its own mean and spread before the network
@@ -29,7 +29,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from common import CELL_H, CELL_W, CLASSES
+from common import CLASSES
 
 # Measured: on a shared 8-core host, 2 threads and channels-last train this
 # net in a minute an epoch; all 8 took half an hour.
@@ -77,8 +77,11 @@ class DrumNet(nn.Module):
             dw(16, 32, 2), dw(32, 32, 1),                                          # 16x10
             dw(32, 64, 2), dw(64, 64, 1),                                          # 8x5
             dw(64, 96, 2),                                                         # 4x3
+            dw(96, 128, 2),                                                        # 2x2
         )
-        self.head = nn.Conv2d(96, CLASSES, (CELL_H // 8, (CELL_W + 7) // 8))     # the FC
+        # The FC, as a convolution over the whole 2x2 map: square, because the
+        # engine's kernels are (a 4x3 one would need a new kernel shape).
+        self.head = nn.Conv2d(128, CLASSES, 2)
 
     def forward(self, x):
         return self.head(self.body(x)).flatten(1)

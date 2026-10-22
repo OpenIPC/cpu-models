@@ -1,12 +1,22 @@
 # export_pdnet.py <model_int8.onnx> <out.pdnet>
 #
-# The person detector's QDQ graph as the blob pdnet.c runs: the same walk,
-# constants and arithmetic as pdq.run(head="float"), which is the reference
-# the C engine is checked against bit for bit.
+# A QDQ graph as the blob pdnet.c runs: the same walk, constants and
+# arithmetic as pdq.run(head="float"), which is the reference the C engine is
+# checked against bit for bit. Two kinds:
+#
+#   a detector (version 1): the person detector, an NV21 frame in, three
+#   levels of (class, box) heads out -- six graph outputs;
+#   a classifier (version 2): a one-channel crop in, standardised by its own
+#   mean and spread as the model was trained, its outputs the graph's.
+#
+# A node the engine has no op for is refused here, not dropped: a graph that
+# kept a ReLU or a reshape would otherwise export as some other network.
 #
 # Layout, little-endian, every section 4-byte aligned:
-#   "MAJPDNT1" u32 version=1
-#   u32 in_w in_h  f32 in_scale  i32 in_zp
+#   "MAJPDNT1" u32 version (1 detector, 2 classifier)
+#   version 1: u32 in_w in_h  f32 in_scale  i32 in_zp
+#   version 2: u32 in_w in_h in_c  f32 in_scale  i32 in_zp
+#              u32 prep (1: (y - mean) / max(std, floor) over the crop)  f32 floor
 #   u32 n_tensors, then per tensor u32 h w c
 #   u32 n_ops, then per op u32 type, and:
 #     CONV(1):   u32 in out k stride pad depthwise cin cout float_out
@@ -18,7 +28,8 @@
 #     RESIZE2X(2): u32 in out          (nearest, same quantization)
 #     ADD(3):    u32 a b out  i32 zp_a zp_b zp_out
 #                i32 mult_a shift_a mult_b shift_b mult_out shift_out
-#   u32 n_levels, then per level u32 stride cls_tensor reg_tensor
+#   version 1: u32 n_levels, then per level u32 stride cls_tensor reg_tensor
+#   version 2: u32 n_outputs, then per output u32 tensor
 import struct
 import sys
 
@@ -30,6 +41,10 @@ import pdq  # noqa: E402
 
 CONV, RESIZE2X, ADD = 1, 2, 3
 ADD_SHIFT = 20
+STD_FLOOR = 4.0   # tools/meters/train_drum.py standardise()
+# Nodes that are not ops: quantization itself, and the shape arithmetic the
+# person detector's Resize carries (its scales are fixed at 2).
+PLUMBING = {"QuantizeLinear", "DequantizeLinear", "Constant", "Shape", "Slice", "Concat"}
 
 
 def main(src, dst):
@@ -44,10 +59,16 @@ def main(src, dst):
             shapes[name] = shape
         return ids[name]
 
-    in_w, in_h = 320, 192
+    unknown = sorted({n.op_type for n in g.nodes} - PLUMBING - {"Conv", "Resize", "Add"})
+    if unknown:
+        raise SystemExit(f"{src}: no engine op for {unknown}")
+    _, in_c, in_h, in_w = g.input_shape
+    detector = len(g.outputs) == 6
+    if detector and in_c != 3:
+        raise SystemExit(f"{src}: a detector takes NV21 as 3 channels, not {in_c}")
     qi = next(n for n in g.nodes if n.op_type == "QuantizeLinear" and n.input[0] == g.input)
     in_scale, in_zp = g.qparams[qi.output[0]]
-    tid(qi.output[0], (in_h, in_w, 3))
+    tid(qi.output[0], (in_h, in_w, in_c))
     ops = []
     final = {}
     for n in g.nodes:
@@ -62,6 +83,13 @@ def main(src, dst):
             a = {x.name: onnx.helper.get_attribute_value(x) for x in n.attribute}
             k, st, grp = a["kernel_shape"][0], a["strides"][0], a.get("group", 1)
             pad = a.get("pads", [0, 0, 0, 0])[0]
+            # The engine's convolutions are square, strided and padded alike
+            # both ways: anything else would be read as something it is not.
+            if (len(set(a["kernel_shape"])) != 1 or len(set(a["strides"])) != 1 or
+                    len(set(a.get("pads", [0, 0, 0, 0]))) != 1 or
+                    any(d != 1 for d in a.get("dilations", [1, 1]))):
+                raise SystemExit(f"{src}: {n.name}: kernel {a['kernel_shape']} strides "
+                                 f"{a['strides']} pads {a.get('pads')}: not one the engine runs")
             ih, iw, ic = shapes[src_t]
             oh, ow = (ih + 2 * pad - k) // st + 1, (iw + 2 * pad - k) // st + 1
             co = w.shape[0]
@@ -110,8 +138,13 @@ def main(src, dst):
             o = tid(q.output[0], shapes[ta])
             ops.append(struct.pack("<4I9i", ADD, ids[ta], ids[tb], o, int(zp_a), int(zp_b),
                                    int(zp_out), *ma, *mb, *mo))
-    out += b"MAJPDNT1" + struct.pack("<I", 1)
-    out += struct.pack("<2Ifi", in_w, in_h, in_scale, in_zp)
+    if detector:
+        out += b"MAJPDNT1" + struct.pack("<I", 1)
+        out += struct.pack("<2Ifi", in_w, in_h, in_scale, in_zp)
+    else:
+        out += b"MAJPDNT1" + struct.pack("<I", 2)
+        out += struct.pack("<3Ifi", in_w, in_h, in_c, in_scale, in_zp)
+        out += struct.pack("<If", 1, STD_FLOOR)
     names = sorted(ids, key=ids.get)
     out += struct.pack("<I", len(names))
     for nm in names:
@@ -119,13 +152,21 @@ def main(src, dst):
     out += struct.pack("<I", len(ops))
     for r in ops:
         out += r
-    levels = []
-    for lv, stride in enumerate((8, 16, 32)):
-        cls_o, reg_o = g.outputs[2 * lv], g.outputs[2 * lv + 1]
-        levels.append((stride, final[cls_o], final[reg_o]))
-    out += struct.pack("<I", len(levels))
-    for lv in levels:
-        out += struct.pack("<3I", *lv)
+    if detector:
+        levels = []
+        for lv, stride in enumerate((8, 16, 32)):
+            cls_o, reg_o = g.outputs[2 * lv], g.outputs[2 * lv + 1]
+            levels.append((stride, final[cls_o], final[reg_o]))
+        out += struct.pack("<I", len(levels))
+        for lv in levels:
+            out += struct.pack("<3I", *lv)
+    else:
+        missing = [o for o in g.outputs if o not in final]
+        if missing:
+            raise SystemExit(f"{src}: outputs {missing} are not a convolution's float head")
+        out += struct.pack("<I", len(g.outputs))
+        for o in g.outputs:
+            out += struct.pack("<I", final[o])
     open(dst, "wb").write(out)
     print(f"{dst}: {len(out)} bytes, {len(names)} tensors, {len(ops)} ops")
 
