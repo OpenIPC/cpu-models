@@ -12,6 +12,12 @@
 #
 # A meter with red dials (its "dials", see dials.py) gets each needle's value
 # and how clear it was, alongside its drums.
+#
+# The probabilities are the float model's (the training checkpoint), so what
+# read.py and fuse.py report is the reading's arithmetic over that model.
+# The camera runs the int8 export; what quantization costs is measured
+# against the same float model by check_drum.py (0.2 points on the open
+# water-meter split), and is not folded in here.
 import json
 import sys
 

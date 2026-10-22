@@ -33,7 +33,8 @@ from multiprocessing import Pool
 import cv2
 import numpy as np
 
-from common import cells_at, face_homography, frame_luma, harvested, load_camera, pos_class, rectify
+from common import (cells_at, face_homography, frame_luma, harvested, load_camera, pinned_fonts, pos_class,
+                    rectify)
 from glyphs import drum_window
 
 PATCH = 192          # sensor pixels a side
@@ -68,7 +69,7 @@ def drum_positions(rng, n):
 
 @functools.lru_cache(maxsize=None)
 def font_prior(fontfit):
-    fonts = sorted(f for f in os.listdir(FONTS_DIR) if f.endswith(".ttf"))
+    fonts = pinned_fonts(FONTS_DIR)
     fit = {}
     if fontfit and os.path.exists(fontfit):
         fit = {r["font"]: r for r in json.load(open(fontfit))}

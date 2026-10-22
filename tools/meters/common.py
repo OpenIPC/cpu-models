@@ -6,6 +6,7 @@
 # luma plane in the limited range the VPSS delivers it (16..235). The camera
 # will cut it the same way, so real test crops, synthetic training crops and
 # the camera all see one geometry and one range.
+import hashlib
 import json
 import os
 import subprocess
@@ -106,3 +107,27 @@ def reading_at(meter, at):
         if r["from"] <= at and (r["to"] is None or at < r["to"]):
             return r["drums"]
     return None
+
+
+FONTS_LIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts.txt")
+
+
+def pinned_fonts(fonts_dir):
+    """The fonts fonts.txt pins, each checked against its hash, by file name
+    in <fonts_dir>: a render or a fit is reproducible only from the bytes
+    that were pinned, not from whatever .ttf is lying in the directory
+    (scripts/fetch.sh tools/meters/fonts.txt <fonts_dir> fetches them)."""
+    fonts = []
+    for line in open(FONTS_LIST):
+        if not line.strip() or line.startswith("#"):
+            continue
+        name, sha = line.split()[:2]
+        path = os.path.join(fonts_dir, name)
+        try:
+            got = hashlib.sha256(open(path, "rb").read()).hexdigest()
+        except FileNotFoundError:
+            raise SystemExit(f"{path}: missing; bash scripts/fetch.sh tools/meters/fonts.txt {fonts_dir}")
+        if got != sha:
+            raise SystemExit(f"{path}: sha256 {got}, fonts.txt pins {sha}")
+        fonts.append(name)
+    return sorted(fonts)

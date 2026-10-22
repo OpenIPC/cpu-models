@@ -66,8 +66,15 @@ def main(d, out, name, splits="test,valid"):
                 v = np.array([-u[1], u[0]])
                 # A cell ends where the next drum begins, as a camera's
                 # annotation splits a window: never wider than the distance
-                # to the nearest digit.
-                dist = np.linalg.norm(c[:, None] - c[None], axis=-1) if len(c) else np.zeros((0, 0))
+                # along the row to the nearest digit beside it. Only a digit
+                # on the same line is a neighbour: one in the number above or
+                # below (a dashboard, a serial) is not a drum of this one.
+                if len(c):
+                    rel = c[None] - c[:, None]
+                    along, across = np.abs(rel @ u), np.abs(rel @ v)
+                    dist = np.where(across < 0.5 * max(hmed, 1e-6), along, np.inf)
+                else:
+                    dist = np.zeros((0, 0))
                 np.fill_diagonal(dist, np.inf)
                 for k, r in enumerate(rows):
                     cx, cy, bw, bh = (float(t) for t in r[1:])

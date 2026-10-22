@@ -3,10 +3,14 @@
 # listed. Roboflow exports need ROBOFLOW_API_KEY in the environment; the key
 # is the user's own and never goes into a file.
 #
-# source    workspace/project                          version  format  licence    use
-roboflow    wattwise/electric-meter-wzeeg-zk5fd        4        yolov8  CC-BY-4.0  electricity: reading regions (style, region, test once read)
-roboflow    proba-vwwtl/gas-meter-recognition          3        yolov8  CC-BY-4.0  gas: meter and serial regions
-roboflow    gas-meter/gas-meter-7s1px                  1        yolov8  CC-BY-4.0  gas: reading regions
-roboflow    digittagging/gas_meter_number_detection2   2        yolov8  CC-BY-4.0  gas: number regions
-roboflow    meter-reader-ai/odometer-ch73o-dhlvv       24       yolov8  CC-BY-4.0  digits 0-9 boxed: drum and LCD digits
-roboflow    water-meter-yfzw4/water-meter-dataset      3        yolov8  CC-BY-4.0  water: digits 0-9 boxed
+# contents: the sha256 of the extracted export, over each file's relative
+# path and sha256 in path order (fetch_open.py tree_sha256): the bytes
+# trained and measured on, not just the version Roboflow names.
+#
+# source    workspace/project                          version  format  licence    contents  use
+roboflow   wattwise/electric-meter-wzeeg-zk5fd        4        yolov8  CC-BY-4.0  95777f228e8f9abbe5b48614af09b420b71fe33dd9b6bfbff22fa3d973b4c7cb  electricity: reading regions (style, region, test once read)
+roboflow   proba-vwwtl/gas-meter-recognition          3        yolov8  CC-BY-4.0  622612d8216bfdc62e3a5b178319e826c5d1bc907cff20bd24d5d77e421a7fc9  gas: meter and serial regions
+roboflow   gas-meter/gas-meter-7s1px                  1        yolov8  CC-BY-4.0  e7c71253e8277723ceffc3852885da61feb0ab60eb960365b8f2bd66488493b7  gas: reading regions
+roboflow   digittagging/gas_meter_number_detection2   2        yolov8  CC-BY-4.0  15e6ff7332b1ab325c26f0a2d6740c7eea0a71d228107d4a5918f5f02db49d8a  gas: number regions
+roboflow   meter-reader-ai/odometer-ch73o-dhlvv       24       yolov8  CC-BY-4.0  ec3d5f34769bd5e34fd3f8243e506cc293330e661f1b42dae79e8de2f6b5080d  digits 0-9 boxed: drum and LCD digits
+roboflow   water-meter-yfzw4/water-meter-dataset      3        yolov8  CC-BY-4.0  447666608fe244a43eaa26f3b6b5e1f5e227c78ae624231e9f4f9b83a850f7b9  water: digits 0-9 boxed

@@ -33,9 +33,11 @@ SIZES = {1382400: (1280, 720), 3110400: (1920, 1080), 2764800: (2560, 720),
 def fetch(url, jump):
     if jump:
         cmd = "wget -q -T 20 -O - " + shlex.quote(url)
+        # The URL carries the camera's credentials, so the jump host must be
+        # the one known_hosts says it is: a first connection is made by hand.
         return subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "LogLevel=ERROR",
-                               "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-                               jump, cmd], check=True, capture_output=True, timeout=60).stdout
+                               "-o", "StrictHostKeyChecking=yes", jump, cmd],
+                              check=True, capture_output=True, timeout=60).stdout
     pw = urllib.request.HTTPPasswordMgrWithDefaultRealm()
     p = urllib.parse.urlsplit(url)
     if p.username:

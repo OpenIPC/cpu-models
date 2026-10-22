@@ -18,11 +18,15 @@
 #
 # Time: a meter never runs backwards (its last drum may seem to, by BACK half
 # steps at a cost: that is the reading's noise, not the meter), nor faster
-# than max_per_hour of its last drum's units, and mostly it runs at about
-# typical_per_hour: a step is charged its size over what that rate would turn
-# in the time. The best path through the moments is found by Viterbi; a
-# moment no candidate of which can follow is let through at a cost, so one
-# bad frame cannot end the run.
+# than max_per_hour, and mostly it runs at about typical_per_hour: a step is
+# charged its size over what that rate would turn in the time. Both rates are
+# in the last drum's units, not the meter's (an Energomera's 15 kWh an hour
+# over a drum of tenths is 150), as the camera files give them. The best path
+# through the moments is found by Viterbi. A step the rules forbid costs
+# JUMP_COST rather than being impossible, so a meter replaced, or a run that
+# began on a misread, is not held wrong for ever; such a step is marked
+# "jump" in the output, and a value it would take backwards is held at the
+# one before ("held").
 #
 # Trust: a camera is weighted by how often its own reading agreed with the
 # fused one, found by iterating (EM, in effect). An IR-lit camera that reads
@@ -188,7 +192,8 @@ def main(path, *args):
             return None if r is None or "?" in r[:-1] or "r" in r[:-1] else r[:-1]
 
         rows = report.setdefault(mid, {"alone": [0, 0], "cameras": [0, 0], "cameras+time": [0, 0]})
-        prev_value = prev_at = prev_fine = None
+        prev_value = prev_at = prev_fine = prev_H = None
+        raw_values = []
         for t, st in enumerate(steps):
             plain = np.array([sum(score(int(H), f["logp"]) for f in st) for H in cand[t]])
             Ht = int(cand[t][int(np.argmax(plain))])
@@ -210,15 +215,23 @@ def main(path, *args):
                 value = (V - V % 10 + last) * unit
             else:
                 # The drum reads "between digits" for much of its roll, so with
-                # the dials near 0 it can be a digit late. Of the digits the drum
-                # allows, take the one that keeps the meter going forward.
+                # the dials near 0 it can be a digit late: the digit it agrees
+                # with, unless that would run the meter back and the next one
+                # up would not.
                 base = V - V % 10 + with_drum(last, frac)
-                opts = [base - 1, base, base + 1]
-                if prev_value is None:
-                    value = base * unit
-                else:
-                    fwd = [o for o in opts if o * unit >= prev_value - 1e-9]
-                    value = (min(fwd) if fwd else base) * unit
+                value = base * unit
+                if prev_value is not None and value < prev_value - 1e-9 \
+                        and (base + 1) * unit >= prev_value - 1e-9:
+                    value = (base + 1) * unit
+            jump = False
+            if prev_H is not None:
+                dt = (st[0]["at"] - prev_at) / 3600
+                D = Hv - prev_H
+                jump = D < -BACK or D > 2 * rate * dt + 2
+            raw_values.append(value)
+            held = prev_value is not None and value < prev_value - 1e-9
+            if held:
+                value = prev_value
             # consumption since the moment before, per hour, in the meter's unit
             # (only between readings of one resolution: a dial-fine value
             # against a drum-only one is the drum's rounding, not consumption)
@@ -226,11 +239,12 @@ def main(path, *args):
             fine = frac is not None
             if prev_value is not None and prev_fine == fine and st[0]["at"] > prev_at:
                 rate_h = (value - prev_value) / ((st[0]["at"] - prev_at) / 3600)
-            prev_value, prev_at, prev_fine = value, st[0]["at"], fine
+            prev_value, prev_at, prev_fine, prev_H = value, st[0]["at"], fine, Hv
             row = {"meter_id": mid, "at": st[0]["at"], "cameras": [f["camera"] for f in st],
                    "reading": fmt(Hv, n), "value": round(value, 6), "dials_from": dial_cam,
                    "per_hour": None if rate_h is None else round(rate_h, 6),
                    "cameras_only": fmt(Ht, n), "margin": round(margin, 2),
+                   "jump": jump, "held": held,
                    "alone": {f["camera"]: fmt(f["alone"], n) for f in st}, "truth": tr}
             fused_rows.append(row)
             if tr is None:
@@ -242,10 +256,15 @@ def main(path, *args):
             rows["cameras"][1] += fmt(Ht, n)[:n - 1] == tr
             rows["cameras+time"][0] += 1
             rows["cameras+time"][1] += fmt(Hv, n)[:n - 1] == tr
+        report[mid]["raw"] = raw_values
     for mid, r in report.items():
-        vals = [row["value"] for row in fused_rows if row["meter_id"] == mid]
+        # backwards is counted before holding: what the reading did, not what
+        # the output was made to say
+        vals = r.pop("raw")
         back = sum(b < a - 1e-9 for a, b in zip(vals, vals[1:]))
-        print(mid, {k: f"{v[1]}/{v[0]}" for k, v in r.items()}, f"backwards {back}/{max(len(vals) - 1, 0)}")
+        mine = [row for row in fused_rows if row["meter_id"] == mid]
+        print(mid, {k: f"{v[1]}/{v[0]}" for k, v in r.items()}, f"backwards {back}/{max(len(vals) - 1, 0)}",
+              f"held {sum(row['held'] for row in mine)}", f"jumps {sum(row['jump'] for row in mine)}")
     if out_path:
         with open(out_path, "w") as f:
             for r in fused_rows:

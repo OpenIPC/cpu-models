@@ -20,6 +20,7 @@ import sys
 import cv2
 import numpy as np
 
+from common import pinned_fonts
 from glyphs import drum_window, weight_range
 
 MARGIN = 0.12  # of the crop, on each side: the printed frame
@@ -61,7 +62,7 @@ def main(bank, fonts_dir, out):
     h, w = next(iter(reals.values())).shape
     refs = {k: interior(v) for k, v in reals.items()}
     results = []
-    for path in sorted(glob.glob(f"{fonts_dir}/*.ttf")):
+    for path in (os.path.join(fonts_dir, f) for f in pinned_fonts(fonts_dir)):
         wr = weight_range(path)
         weights = [None] if wr is None else [x for x in (400, 500, 600, 700) if wr[0] <= x <= wr[1]]
         best = None
