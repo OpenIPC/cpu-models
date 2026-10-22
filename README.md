@@ -21,14 +21,22 @@ for, in NV21; it reports people with a score from 0 to 100.
 Published only by the `release` workflow (Actions -> release -> Run workflow,
 with a new tag), never by hand. A release carries:
 
-- `person.pdnet`: the model as majestic's engine loads it, exported from the
-  ONNX by `tools/export_pdnet.py`;
+- `person.qnet`: the model as majestic's engine loads it, exported from the
+  ONNX by `tools/export_qnet.py`. Releases up to and including the first one
+  with a classifier engine shipped `person.pdnet` instead, the older blob
+  format (`MAJPDNT1`); the engine reads only `MAJQNET1` now, so majestic
+  moves to `.qnet` in the same change that takes this engine;
 - `person.json`: the score thresholds behind majestic's three presets, for this
   model, installed beside it:
   - `balanced`: the F1-optimal threshold;
   - `fewerFalseAlarms`: the F0.5 optimum;
   - `catchEverything`: the highest threshold keeping recall at 0.90, else the
     F2 optimum;
+- `drum.qnet`: the drum model (`models/drum/`), which reads one drum of a
+  utility meter's odometer, a 20x32 luma crop in and 20 half steps of a digit
+  out. Its host and ARMv7 NEON engines are checked against the reference bit
+  for bit, input and every logit, on 400 crops cut from the same COCO images
+  (`tools/meters/drum_crops.py`), and against each other byte for byte;
 - `points.md`: what each preset achieves; and `SHA256SUMS`.
 
 ## Building
@@ -43,9 +51,9 @@ bash scripts/build.sh [out]
 
 1. fetches COCO val2017 and its annotations, hash-checked (`coco.txt`);
 2. exports the blob;
-3. builds the engine (`engine/pdnet.c`) for the host and for ARMv7 with NEON,
+3. builds the engine (`engine/qnet.c`) for the host and for ARMv7 with NEON,
    the camera's path;
-4. checks both against `tools/pdq.py`, the model's arithmetic written out in
+4. checks both against `tools/qref.py`, the model's arithmetic written out in
    numpy. On 40 crops, every value of all six head maps must be identical,
    and the ARM build, run under qemu-arm, must find exactly the host's boxes
    on all 3000 crops;

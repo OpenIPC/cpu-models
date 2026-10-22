@@ -1,4 +1,4 @@
-# pdq.py: the CPU person detector's int8 graph, as integer arithmetic.
+# qref.py: the CPU person detector's int8 graph, as integer arithmetic.
 #
 # Reads the statically quantized ONNX (QDQ) model and runs it the way a C
 # engine on the camera would: int8 NHWC activations with zero points, int8
@@ -54,6 +54,7 @@ class Graph:
         self.prod = {o: n for n in self.nodes for o in n.output}
         self.outputs = [o.name for o in m.graph.output]
         self.input = m.graph.input[0].name
+        self.input_shape = [d.dim_value for d in m.graph.input[0].type.tensor_type.shape.dim]
         self.qparams = {}  # quantized tensor name -> (scale, zp)
         for n in self.nodes:
             if n.op_type == "QuantizeLinear":

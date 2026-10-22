@@ -1,4 +1,4 @@
-#include "pdnet.h"
+#include "qnet.h"
 
 #include <math.h>
 #include <stdbool.h>
@@ -8,14 +8,20 @@
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
 #include <arm_neon.h>
-#define PDNET_NEON 1
+#define QNET_NEON 1
 #endif
 
-#define PDNET_MAGIC "MAJPDNT1"
+#define QNET_MAGIC "MAJQNET1"
+#define QNET_FORMAT 1
 #define MAX_TENSORS 64
 #define MAX_OPS 64
 #define MAX_LEVELS 3
+#define MAX_OUTPUTS 4
 #define NMS_IOU 0.55f
+
+/* What a blob's network is, and so what it is given and gives. */
+enum { KIND_DETECTOR = 1, KIND_CLASSIFIER = 2 };
+enum { PREP_STANDARDISE = 1 };
 
 /* A blob's activations, all tensors together, may not ask for more than
  * this: the real network's are a few hundred KB, and a camera has a
@@ -56,14 +62,19 @@ typedef struct {
     int32_t zp_a, zp_b, zp_o, m_a, s_a, m_b, s_b, m_o, s_o;
 } Op;
 
-struct PdNet {
+struct QNet {
     uint8_t *blob;
-    int in_w, in_h;
+    int kind;
+    int in_w, in_h, in_c;
+    float in_scale;        /* classifier: the input's quantization ... */
+    int32_t in_zp;
+    float floor;           /* ... and the least spread a crop is divided by */
     int8_t lut_y[256], lut_c[256];
-    int n_t, n_ops, n_lv;
+    int n_t, n_ops, n_lv, n_out;
     Tensor t[MAX_TENSORS];
     Op op[MAX_OPS];
     struct { int stride, cls, reg; } lv[MAX_LEVELS];
+    int out[MAX_OUTPUTS];  /* classifier: its float outputs */
     int32_t *acc;
     int16_t *col;          /* im2col rows for the NEON kxk */
 };
@@ -79,6 +90,15 @@ static inline int32_t requant(int32_t acc, int32_t mult, int32_t shift) {
 
 static inline int8_t clamp8(int32_t v) {
     return (int8_t)(v < -128 ? -128 : v > 127 ? 127 : v);
+}
+
+/* A quotient already rounded onto the input's int8 grid, with its zero point.
+ * Bounded before the conversion: a blob may carry any positive scale, and a
+ * tiny one takes the quotient past what an int32 holds, or to infinity.
+ * Every in-range value is unchanged. */
+static inline int8_t quant_in(double q, int zp) {
+    q = q < -512 ? -512 : q > 512 ? 512 : q;   /* NaN cannot reach here */
+    return clamp8((int32_t)q + zp);
 }
 
 /* ---- loading --------------------------------------------------------------- */
@@ -114,7 +134,7 @@ static float f32(Rd *r) {
     return f;
 }
 
-static bool tensor_ok(const PdNet *n, uint32_t i) { return i < (uint32_t)n->n_t; }
+static bool tensor_ok(const QNet *n, uint32_t i) { return i < (uint32_t)n->n_t; }
 
 static bool zp_ok(int32_t zp) { return zp >= -128 && zp <= 127; }
 
@@ -124,24 +144,42 @@ static bool shift_ok(int32_t shift) { return shift >= -31 && shift <= 30; }
 /* An op reads only tensors something earlier produced as int8, and writes a
  * tensor nothing has written yet: the order is the execution order, and every
  * buffer is read as what it is. */
-static bool reads_int8(const PdNet *n, uint32_t i) {
+static bool reads_int8(const QNet *n, uint32_t i) {
     return tensor_ok(n, i) && n->t[i].kind == T_INT8;
 }
-static bool writes_new(const PdNet *n, uint32_t i) {
+static bool writes_new(const QNet *n, uint32_t i) {
     return tensor_ok(n, i) && n->t[i].kind == T_NONE;
 }
 
-static bool parse(PdNet *n, Rd *r) {
+static bool parse(QNet *n, Rd *r) {
     const void *m = take(r, 8);
-    if (!m || memcmp(m, PDNET_MAGIC, 8) || u32(r) != 1)
+    if (!m || memcmp(m, QNET_MAGIC, 8) || u32(r) != QNET_FORMAT)
+        return false;
+    n->kind = (int)u32(r);
+    if (n->kind != KIND_DETECTOR && n->kind != KIND_CLASSIFIER)
         return false;
     n->in_w = (int)u32(r);
     n->in_h = (int)u32(r);
+    n->in_c = (int)u32(r);
     const float in_scale = f32(r);
     const int32_t in_zp = i32(r);
-    /* Even: NV21 carries chroma for pixel pairs and row pairs. */
     if (r->bad || n->in_w <= 0 || n->in_w > 4096 || n->in_h <= 0 || n->in_h > 4096 ||
-        (n->in_w & 1) || (n->in_h & 1) || !(in_scale > 0) || !zp_ok(in_zp))
+        !(in_scale > 0) || !isfinite(in_scale) || !zp_ok(in_zp))
+        return false;
+    n->in_scale = in_scale;
+    n->in_zp = in_zp;
+    if (n->kind == KIND_CLASSIFIER) {
+        /* A crop of luma, standardised by its own mean and spread: the one
+         * preprocessing a classifier here is trained with. */
+        const uint32_t prep = u32(r);
+        n->floor = f32(r);
+        if (r->bad || n->in_c != 1 || prep != PREP_STANDARDISE || !(n->floor > 0) ||
+            !isfinite(n->floor))
+            return false;
+    }
+    /* A detector takes NV21 as Y, U and V; even, because NV21 carries
+     * chroma for pixel pairs and row pairs. */
+    if (n->kind == KIND_DETECTOR && (n->in_c != 3 || (n->in_w & 1) || (n->in_h & 1)))
         return false;
     /* The frame's bytes to the network's int8 input, as the float model's
      * preprocessing defines it: Y from BT.709 limited range to -1..1, U and
@@ -150,8 +188,8 @@ static bool parse(PdNet *n, Rd *r) {
     for (int v = 0; v < 256; v++) {
         const float y = ((float)v - 16.0f) * ky - 1.0f;
         const float c = ((float)v - 128.0f) * kc;
-        n->lut_y[v] = clamp8((int32_t)rintf(y / in_scale) + in_zp);
-        n->lut_c[v] = clamp8((int32_t)rintf(c / in_scale) + in_zp);
+        n->lut_y[v] = quant_in(rintf(y / in_scale), in_zp);
+        n->lut_c[v] = quant_in(rintf(c / in_scale), in_zp);
     }
     n->n_t = (int)u32(r);
     if (r->bad || n->n_t <= 0 || n->n_t > MAX_TENSORS)
@@ -170,7 +208,7 @@ static bool parse(PdNet *n, Rd *r) {
         if (total > MAX_ACTIVATION_BYTES)
             return false;
     }
-    n->t[0].kind = T_INT8; /* the input, which pdnet_detect() fills */
+    n->t[0].kind = T_INT8; /* the input, which qnet_detect() fills */
     n->n_ops = (int)u32(r);
     if (r->bad || n->n_ops <= 0 || n->n_ops > MAX_OPS)
         return false;
@@ -248,6 +286,17 @@ static bool parse(PdNet *n, Rd *r) {
             return false;
         }
     }
+    if (n->kind == KIND_CLASSIFIER) {
+        n->n_out = (int)u32(r);
+        if (r->bad || n->n_out <= 0 || n->n_out > MAX_OUTPUTS)
+            return false;
+        for (int i = 0; i < n->n_out; i++) {
+            n->out[i] = (int)u32(r);
+            if (r->bad || !tensor_ok(n, (uint32_t)n->out[i]) || n->t[n->out[i]].kind != T_FLOAT)
+                return false;
+        }
+        return !r->bad && n->t[0].h == n->in_h && n->t[0].w == n->in_w && n->t[0].c == n->in_c;
+    }
     n->n_lv = (int)u32(r);
     if (r->bad || n->n_lv <= 0 || n->n_lv > MAX_LEVELS)
         return false;
@@ -304,11 +353,11 @@ static bool prepare(Op *o) {
     return true;
 }
 
-PdNet *pdnet_open(const char *path) {
+QNet *qnet_open(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f)
         return NULL;
-    PdNet *n = calloc(1, sizeof(*n));
+    QNet *n = calloc(1, sizeof(*n));
     long len = -1;
     if (n && !fseek(f, 0, SEEK_END) && (len = ftell(f)) > 0 && len < (16 << 20) &&
         !fseek(f, 0, SEEK_SET) && (n->blob = malloc((size_t)len)) &&
@@ -365,11 +414,11 @@ PdNet *pdnet_open(const char *path) {
     }
     if (f)
         fclose(f);
-    pdnet_close(n);
+    qnet_close(n);
     return NULL;
 }
 
-void pdnet_close(PdNet *n) {
+void qnet_close(QNet *n) {
     if (!n)
         return;
     for (int i = 0; i < n->n_t; i++) {
@@ -388,8 +437,8 @@ void pdnet_close(PdNet *n) {
     free(n);
 }
 
-int pdnet_width(const PdNet *n) { return n->in_w; }
-int pdnet_height(const PdNet *n) { return n->in_h; }
+int qnet_width(const QNet *n) { return n->in_w; }
+int qnet_height(const QNet *n) { return n->in_h; }
 
 /* ---- the layers -------------------------------------------------------------- */
 
@@ -404,7 +453,7 @@ static inline void emit(const Op *o, int32_t acc, int c, int8_t *q, float *f) {
 static inline int32_t dot_i8(const int8_t *a, const int8_t *w, int n) {
     int i = 0;
     int32_t s = 0;
-#ifdef PDNET_NEON
+#ifdef QNET_NEON
     int32x4_t c = vdupq_n_s32(0);
     for (; i + 16 <= n; i += 16) {
         const int8x16_t av = vld1q_s8(a + i), wv = vld1q_s8(w + i);
@@ -421,7 +470,7 @@ static inline int32_t dot_i8(const int8_t *a, const int8_t *w, int n) {
     return s;
 }
 
-#ifdef PDNET_NEON
+#ifdef QNET_NEON
 /* Eight channels' accumulators to int8: acc * mult rounded once by the
  * channel's shift (vrshlq_s64 adds the half before shifting, as requant()
  * does), plus the zero point, saturated. Bit for bit requant() + clamp8(). */
@@ -659,7 +708,7 @@ static void depthwise(const Op *o, const Tensor *ti, Tensor *to, int32_t *acc) {
                     const int8_t *ip = ti->q + ((size_t)iy * ti->w + ix) * c;
                     const int8_t *wp = o->w + ((size_t)ky * k + kx) * c;
                     int ch = 0;
-#ifdef PDNET_NEON
+#ifdef QNET_NEON
                     const int16x8_t zp = vdupq_n_s16((int16_t)o->in_zp);
                     for (; ch + 8 <= c; ch += 8) {
                         const int16x8_t a = vsubq_s16(vmovl_s8(vld1_s8(ip + ch)), zp);
@@ -693,7 +742,7 @@ static void resize2x(const Tensor *ti, Tensor *to) {
 static void add(const Op *o, const Tensor *a, const Tensor *b, Tensor *to) {
     const size_t e = (size_t)to->h * to->w * to->c;
     size_t i = 0;
-#ifdef PDNET_NEON
+#ifdef QNET_NEON
     /* The same three roundings, two lanes of 64 bits at a time. */
     const int64x2_t na = vdupq_n_s64(-(int64_t)(31 - o->s_a));
     const int64x2_t nb = vdupq_n_s64(-(int64_t)(31 - o->s_b));
@@ -729,7 +778,7 @@ static void add(const Op *o, const Tensor *a, const Tensor *b, Tensor *to) {
 
 static float sigmoidf(float x) { return 1.0f / (1.0f + expf(-x)); }
 
-static float iou(const PdBox *a, const PdBox *b) {
+static float iou(const QBox *a, const QBox *b) {
     const int x0 = a->x > b->x ? a->x : b->x, y0 = a->y > b->y ? a->y : b->y;
     const int x1 = a->x + a->w < b->x + b->w ? a->x + a->w : b->x + b->w;
     const int y1 = a->y + a->h < b->y + b->h ? a->y + a->h : b->y + b->h;
@@ -740,31 +789,17 @@ static float iou(const PdBox *a, const PdBox *b) {
 }
 
 static int by_score(const void *a, const void *b) {
-    return ((const PdBox *)b)->score - ((const PdBox *)a)->score;
+    return ((const QBox *)b)->score - ((const QBox *)a)->score;
 }
 
-int pdnet_detect(
-    PdNet *n, const uint8_t *y, int ystride, const uint8_t *vu, int vustride,
-    PdBox *out, int max, int score_min) {
-    if (!n || !y || !vu || !out || max <= 0)
-        return -1;
-    int8_t *in = n->t[0].q;
-    for (int j = 0; j < n->in_h; j++) {
-        const uint8_t *yr = y + (size_t)j * ystride, *cr = vu + (size_t)(j / 2) * vustride;
-        int8_t *p = in + (size_t)j * n->in_w * 3;
-        for (int i = 0; i < n->in_w; i++) {
-            const int ci = i & ~1;
-            p[3 * i + 0] = n->lut_y[yr[i]];
-            p[3 * i + 1] = n->lut_c[cr[ci + 1]]; /* U; NV21 puts V first */
-            p[3 * i + 2] = n->lut_c[cr[ci]];     /* V */
-        }
-    }
+/* Every op in order, on whatever the input tensor holds. */
+static void run_ops(QNet *n) {
     for (int j = 0; j < n->n_ops; j++) {
         const Op *o = &n->op[j];
         Tensor *to = &n->t[o->out];
         if (o->type == OP_CONV) {
             const Tensor *ti = &n->t[o->in];
-#ifdef PDNET_NEON
+#ifdef QNET_NEON
             /* Eight output channels a time; the heads (1 and 4 channels, and
              * float) take the plain path, which costs them nothing. */
             if (!o->float_out && o->cout % 8 == 0 &&
@@ -789,10 +824,29 @@ int pdnet_detect(
             add(o, &n->t[o->in], &n->t[o->in2], to);
         }
     }
+}
+
+int qnet_detect(
+    QNet *n, const uint8_t *y, int ystride, const uint8_t *vu, int vustride,
+    QBox *out, int max, int score_min) {
+    if (!n || n->kind != KIND_DETECTOR || !y || !vu || !out || max <= 0)
+        return -1;
+    int8_t *in = n->t[0].q;
+    for (int j = 0; j < n->in_h; j++) {
+        const uint8_t *yr = y + (size_t)j * ystride, *cr = vu + (size_t)(j / 2) * vustride;
+        int8_t *p = in + (size_t)j * n->in_w * 3;
+        for (int i = 0; i < n->in_w; i++) {
+            const int ci = i & ~1;
+            p[3 * i + 0] = n->lut_y[yr[i]];
+            p[3 * i + 1] = n->lut_c[cr[ci + 1]]; /* U; NV21 puts V first */
+            p[3 * i + 2] = n->lut_c[cr[ci]];     /* V */
+        }
+    }
+    run_ops(n);
 
     /* Decode as the TVM shim did: an anchor-free head, a box per cell whose
      * score clears the floor, distances in stride units, then NMS. */
-    static PdBox cand[4096];
+    static QBox cand[4096];
     int nc = 0;
     for (int l = 0; l < n->n_lv; l++) {
         const Tensor *tc = &n->t[n->lv[l].cls], *tr = &n->t[n->lv[l].reg];
@@ -816,7 +870,7 @@ int pdnet_detect(
                 const int y1 = (int)(ccy + r[3] * st);
                 if (x1 <= x0 || y1 <= y0)
                     continue;
-                cand[nc++] = (PdBox){x0, y0, x1 - x0, y1 - y0, s};
+                cand[nc++] = (QBox){x0, y0, x1 - x0, y1 - y0, s};
             }
     }
     qsort(cand, (size_t)nc, sizeof(cand[0]), by_score);
@@ -831,7 +885,7 @@ int pdnet_detect(
     return kept;
 }
 
-const float *pdnet_head(const PdNet *n, int level, int reg, int *h, int *w) {
+const float *qnet_head(const QNet *n, int level, int reg, int *h, int *w) {
     if (!n || level < 0 || level >= n->n_lv)
         return NULL;
     const Tensor *t = &n->t[reg ? n->lv[level].reg : n->lv[level].cls];
@@ -840,3 +894,42 @@ const float *pdnet_head(const PdNet *n, int level, int reg, int *h, int *w) {
     return t->f;
 }
 
+
+int qnet_classify(QNet *n, const uint8_t *y, int ystride, float *out, int max) {
+    if (!n || n->kind != KIND_CLASSIFIER || !y || !out || max <= 0)
+        return -1;
+    /* Standardised as in training: the crop's own mean and spread, the
+     * spread floored so a flat crop is not blown up into noise. In double,
+     * and rounded half to even, so the reference can say the same. */
+    const int w = n->in_w, h = n->in_h;
+    double sum = 0, sq = 0;
+    for (int j = 0; j < h; j++)
+        for (int i = 0; i < w; i++)
+            sum += y[(size_t)j * ystride + i];
+    const double mean = sum / ((double)w * h);
+    for (int j = 0; j < h; j++)
+        for (int i = 0; i < w; i++) {
+            const double d = y[(size_t)j * ystride + i] - mean;
+            sq += d * d;
+        }
+    double sd = sqrt(sq / ((double)w * h));
+    if (sd < n->floor)
+        sd = n->floor;
+    int8_t *in = n->t[0].q;
+    for (int j = 0; j < h; j++)
+        for (int i = 0; i < w; i++) {
+            const double v = (y[(size_t)j * ystride + i] - mean) / sd / n->in_scale;
+            in[(size_t)j * w + i] = quant_in(rint(v), n->in_zp);
+        }
+    run_ops(n);
+    int k = 0;
+    for (int o = 0; o < n->n_out; o++) {
+        const Tensor *t = &n->t[n->out[o]];
+        const size_t e = (size_t)t->h * t->w * t->c;
+        for (size_t i = 0; i < e && k < max; i++)
+            out[k++] = t->f[i];
+    }
+    return k;
+}
+
+const int8_t *qnet_input(const QNet *n) { return n ? n->t[0].q : NULL; }
