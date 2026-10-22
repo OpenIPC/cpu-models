@@ -1,4 +1,4 @@
-# pdq.py: the CPU person detector's int8 graph, as integer arithmetic.
+# qref.py: the CPU person detector's int8 graph, as integer arithmetic.
 #
 # Reads the statically quantized ONNX (QDQ) model and runs it the way a C
 # engine on the camera would: int8 NHWC activations with zero points, int8

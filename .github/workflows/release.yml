@@ -51,7 +51,7 @@ jobs:
           {
             echo "Built by run ${{ github.run_id }} from ${{ github.sha }}."
             echo
-            echo "\`person.pdnet\` is the int8 person detector majestic's CPU engine loads;"
+            echo "\`person.qnet\` is the int8 person detector majestic's CPU engine loads;"
             echo "\`person.json\`, installed beside it, is what its three object-detection"
             echo "presets mean for this model. Both the host engine and its ARMv7 NEON"
             echo "build were checked bit for bit against the reference arithmetic before"
@@ -60,4 +60,4 @@ jobs:
             cat out/points.md
           } > notes.md
           gh release create "$TAG" --target "${{ github.sha }}" --title "$TAG" \
-            --notes-file notes.md out/person.pdnet out/person.json out/SHA256SUMS out/points.md
+            --notes-file notes.md out/person.qnet out/person.json out/SHA256SUMS out/points.md

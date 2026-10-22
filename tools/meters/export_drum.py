@@ -5,9 +5,9 @@
 # the engine's last op must be a convolution), quantized statically to QDQ
 # int8 by onnxruntime (per-channel symmetric weights, asymmetric
 # activations, calibrated on crops of both kinds the model trained on), and
-# written as a blob by tools/export_pdnet.py.
+# written as a blob by tools/export_qnet.py.
 #
-# Out: drum_float.onnx, drum_int8.onnx, drum.pdnet in <out-dir>.
+# Out: drum_float.onnx, drum_int8.onnx, drum.qnet in <out-dir>.
 import json
 import os
 import subprocess
@@ -124,8 +124,8 @@ def main(pt, synth, open_train, out):
                     extra_options={"ActivationSymmetric": False, "WeightSymmetric": True})
     ops = sorted({n.op_type for n in onnx.load(q).graph.node})
     print("int8 graph ops:", ops)
-    subprocess.run([sys.executable, os.path.join(TOOLS, "export_pdnet.py"), q,
-                    os.path.join(out, "drum.pdnet")], check=True)
+    subprocess.run([sys.executable, os.path.join(TOOLS, "export_qnet.py"), q,
+                    os.path.join(out, "drum.qnet")], check=True)
 
 
 if __name__ == "__main__":

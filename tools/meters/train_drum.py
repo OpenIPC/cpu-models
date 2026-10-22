@@ -5,7 +5,7 @@
 # on real crops it never saw: <real-dirs> (comma-separated) each hold
 # labels/*.jsonl and crops/, as realcells.py and opencells.py write them.
 #
-# The network is built from what majestic's int8 engine runs (engine/pdnet.c):
+# The network is built from what majestic's int8 engine runs (engine/qnet.c):
 # 3x3 convolutions, depthwise 3x3, 1x1, ReLU; its last layer is a convolution
 # the size of the last (2x2) map, which is a fully connected layer the engine
 # needs no new op for. 20 classes, a half digit each. A drum between two half steps

@@ -1,22 +1,21 @@
-# export_pdnet.py <model_int8.onnx> <out.pdnet>
+# export_qnet.py <model_int8.onnx> <out.qnet>
 #
-# A QDQ graph as the blob pdnet.c runs: the same walk, constants and
-# arithmetic as pdq.run(head="float"), which is the reference the C engine is
+# A QDQ graph as the blob qnet.c runs: the same walk, constants and
+# arithmetic as qref.run(head="float"), which is the reference the C engine is
 # checked against bit for bit. Two kinds:
 #
-#   a detector (version 1): the person detector, an NV21 frame in, three
-#   levels of (class, box) heads out -- six graph outputs;
-#   a classifier (version 2): a one-channel crop in, standardised by its own
+#   a detector (kind 1): the person detector, an NV21 frame in, three levels
+#   of (class, box) heads out -- six graph outputs;
+#   a classifier (kind 2): a one-channel crop in, standardised by its own
 #   mean and spread as the model was trained, its outputs the graph's.
 #
 # A node the engine has no op for is refused here, not dropped: a graph that
 # kept a ReLU or a reshape would otherwise export as some other network.
 #
 # Layout, little-endian, every section 4-byte aligned:
-#   "MAJPDNT1" u32 version (1 detector, 2 classifier)
-#   version 1: u32 in_w in_h  f32 in_scale  i32 in_zp
-#   version 2: u32 in_w in_h in_c  f32 in_scale  i32 in_zp
-#              u32 prep (1: (y - mean) / max(std, floor) over the crop)  f32 floor
+#   "MAJQNET1" u32 format=1  u32 kind (1 detector, 2 classifier)
+#   u32 in_w in_h in_c  f32 in_scale  i32 in_zp
+#   classifier: u32 prep (1: (y - mean) / max(std, floor) over the crop)  f32 floor
 #   u32 n_tensors, then per tensor u32 h w c
 #   u32 n_ops, then per op u32 type, and:
 #     CONV(1):   u32 in out k stride pad depthwise cin cout float_out
@@ -28,8 +27,8 @@
 #     RESIZE2X(2): u32 in out          (nearest, same quantization)
 #     ADD(3):    u32 a b out  i32 zp_a zp_b zp_out
 #                i32 mult_a shift_a mult_b shift_b mult_out shift_out
-#   version 1: u32 n_levels, then per level u32 stride cls_tensor reg_tensor
-#   version 2: u32 n_outputs, then per output u32 tensor
+#   detector:   u32 n_levels, then per level u32 stride cls_tensor reg_tensor
+#   classifier: u32 n_outputs, then per output u32 tensor
 import struct
 import sys
 
@@ -37,7 +36,7 @@ import numpy as np
 import onnx
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
-import pdq  # noqa: E402
+import qref  # noqa: E402
 
 CONV, RESIZE2X, ADD = 1, 2, 3
 ADD_SHIFT = 20
@@ -48,7 +47,7 @@ PLUMBING = {"QuantizeLinear", "DequantizeLinear", "Constant", "Shape", "Slice", 
 
 
 def main(src, dst):
-    g = pdq.Graph(src)
+    g = qref.Graph(src)
     shapes = {}            # tensor name -> (h, w, c)
     ids = {}
     out = bytearray()
@@ -109,7 +108,7 @@ def main(src, dst):
             if is_final:
                 rec += real.astype(np.float32).tobytes()
             else:
-                ms = [pdq.quantize_multiplier(r / s_out) for r in real]
+                ms = [qref.quantize_multiplier(r / s_out) for r in real]
                 rec += np.array(ms, np.int32).reshape(-1).tobytes()
             rec += bias.tobytes()
             if dw:
@@ -131,19 +130,16 @@ def main(src, dst):
             q = next(c for c in g.nodes if n.output[0] in c.input)
             s_out, zp_out = g.qparams[q.output[0]]
             twice = 2 * max(float(s_a), float(s_b))
-            ma = pdq.quantize_multiplier(float(s_a) / twice)
-            mb = pdq.quantize_multiplier(float(s_b) / twice)
-            mo = pdq.quantize_multiplier(twice / ((1 << ADD_SHIFT) * s_out))
+            ma = qref.quantize_multiplier(float(s_a) / twice)
+            mb = qref.quantize_multiplier(float(s_b) / twice)
+            mo = qref.quantize_multiplier(twice / ((1 << ADD_SHIFT) * s_out))
             assert shapes[ta] == shapes[tb]
             o = tid(q.output[0], shapes[ta])
             ops.append(struct.pack("<4I9i", ADD, ids[ta], ids[tb], o, int(zp_a), int(zp_b),
                                    int(zp_out), *ma, *mb, *mo))
-    if detector:
-        out += b"MAJPDNT1" + struct.pack("<I", 1)
-        out += struct.pack("<2Ifi", in_w, in_h, in_scale, in_zp)
-    else:
-        out += b"MAJPDNT1" + struct.pack("<I", 2)
-        out += struct.pack("<3Ifi", in_w, in_h, in_c, in_scale, in_zp)
+    out += b"MAJQNET1" + struct.pack("<2I", 1, 1 if detector else 2)
+    out += struct.pack("<3Ifi", in_w, in_h, in_c, in_scale, in_zp)
+    if not detector:
         out += struct.pack("<If", 1, STD_FLOOR)
     names = sorted(ids, key=ids.get)
     out += struct.pack("<I", len(names))

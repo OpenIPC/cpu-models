@@ -25,7 +25,7 @@ cameras quietly detect worse.
 Prioritise, in order:
 
 1. Exactness. The published blob must compute what the quantized model defines: the
-   reference arithmetic (pdq.py) and the C engine must agree bit for bit, and the release
+   reference arithmetic (qref.py) and the C engine must agree bit for bit, and the release
    must check that before it measures or publishes anything. A change to either side that
    is not shown to keep them equal is a finding.
 
