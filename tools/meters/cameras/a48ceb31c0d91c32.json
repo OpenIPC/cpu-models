@@ -105,7 +105,10 @@
      "to": null,
      "drums": "001?r"
     }
-   ]
+   ],
+   "unit": "m3",
+   "max_per_hour": 3,
+   "typical_per_hour": 0.1
   },
   {
    "name": "mid",
@@ -208,7 +211,10 @@
      "to": null,
      "drums": "0012r"
     }
-   ]
+   ],
+   "unit": "m3",
+   "max_per_hour": 3,
+   "typical_per_hour": 0.1
   },
   {
    "name": "right",
@@ -311,7 +317,10 @@
      "to": null,
      "drums": "0003r"
     }
-   ]
+   ],
+   "unit": "m3",
+   "max_per_hour": 3,
+   "typical_per_hour": 0.1
   }
  ]
 }

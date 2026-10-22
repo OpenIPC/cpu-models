@@ -161,7 +161,11 @@
      "to": 1792616600,
      "drums": "0030167r"
     }
-   ]
+   ],
+   "meter_id": "lab-valtec",
+   "unit": "m3",
+   "max_per_hour": 1500,
+   "typical_per_hour": 30
   }
  ]
 }

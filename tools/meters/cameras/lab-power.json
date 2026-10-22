@@ -145,11 +145,25 @@
    ],
    "readings": [
     {
-     "from": 1792614075,
-     "to": 1792617675,
+     "from": 1792612800,
+     "to": 1792618200,
      "drums": "029859r"
+    },
+    {
+     "from": 1792618200,
+     "to": 1792632600,
+     "drums": "029860r"
+    },
+    {
+     "from": 1792632600,
+     "to": 1792645800,
+     "drums": "029861r"
     }
-   ]
+   ],
+   "meter_id": "lab-energomera",
+   "unit": "kWh",
+   "max_per_hour": 150,
+   "typical_per_hour": 15
   }
  ]
 }
