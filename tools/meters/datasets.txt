@@ -1,0 +1,12 @@
+# Open meter datasets the meter tools may use: commercially usable licences
+# only (CC0, CC BY 4.0, MIT), each re-checked at its origin before it was
+# listed. Roboflow exports need ROBOFLOW_API_KEY in the environment; the key
+# is the user's own and never goes into a file.
+#
+# source    workspace/project                          version  format  licence    use
+roboflow    wattwise/electric-meter-wzeeg-zk5fd        4        yolov8  CC-BY-4.0  electricity: reading regions (style, region, test once read)
+roboflow    proba-vwwtl/gas-meter-recognition          3        yolov8  CC-BY-4.0  gas: meter and serial regions
+roboflow    gas-meter/gas-meter-7s1px                  1        yolov8  CC-BY-4.0  gas: reading regions
+roboflow    digittagging/gas_meter_number_detection2   2        yolov8  CC-BY-4.0  gas: number regions
+roboflow    meter-reader-ai/odometer-ch73o-dhlvv       24       yolov8  CC-BY-4.0  digits 0-9 boxed: drum and LCD digits
+roboflow    water-meter-yfzw4/water-meter-dataset      3        yolov8  CC-BY-4.0  water: digits 0-9 boxed

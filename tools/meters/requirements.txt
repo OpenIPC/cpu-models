@@ -1,0 +1,4 @@
+# The meter tools, on top of the repository's requirements.txt.
+aiohttp==3.13.5
+pillow==12.2.0
+torch==2.10.0
