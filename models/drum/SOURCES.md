@@ -11,4 +11,4 @@
 
 `model.onnx` is the network after BatchNorm folding and static int8 (QDQ)
 quantization by `tools/meters/export_drum.py`; `tools/export_qnet.py` turns
-it into the blob the engine loads.
+it into the blob the engine loads, `drum.qnet`, which releases carry.

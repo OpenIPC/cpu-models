@@ -1,22 +1,22 @@
-# check_drum.py <drum_int8.onnx> <drum_float.onnx> <crops.raw> <labels.jsonl> [exact-n]
+# check_drum.py <drum_int8.onnx> <crops.raw> [exact-n] [<drum_float.onnx> <labels.jsonl>]
 #
 # Two checks of the drum blob as the camera's engine runs it, from
 # <crops.raw>.out (written by classify.c):
 #
-# exact: for the first exact-n crops (default 200), the engine's int8 input
-#   must equal the reference's standardisation of the crop, and its 20
-#   logits must equal qref.py's arithmetic on the quantized graph, every one.
-#   Exits non-zero on any difference.
+# exact: for the first exact-n crops (default 200; 0 for all), the engine's
+#   int8 input must equal the reference's standardisation of the crop, and
+#   its 20 logits must equal qref.py's arithmetic on the quantized graph,
+#   every one. Exits non-zero on any difference. This is the release build's
+#   check, on crops of anything (drum_crops.py).
 #
-# scores: the digit read, the int8 engine's against the float model's
-#   (onnxruntime on the float ONNX), per test set in <labels.jsonl>: what
-#   quantization costs, on real crops only.
+# scores, given the float model and labels: the digit read, the int8
+#   engine's against the float model's (onnxruntime on the float ONNX), per
+#   test set in <labels.jsonl>: what quantization costs, on real crops only.
 import json
 import sys
 from collections import defaultdict
 
 import numpy as np
-import onnxruntime as ort
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0] + "/..")
 import qref  # noqa: E402
@@ -37,7 +37,7 @@ def digit_ok(c, d):
     return int(round(c / 2)) % 10 == d or c in ((2 * d - 1) % CLASSES, 2 * d)
 
 
-def main(q_onnx, f_onnx, raw, labels, exact_n=200):
+def main(q_onnx, raw, exact_n=200, f_onnx=None, labels=None):
     exact_n = int(exact_n)
     g = qref.Graph(q_onnx)
     _, _, h, w = g.input_shape
@@ -47,6 +47,8 @@ def main(q_onnx, f_onnx, raw, labels, exact_n=200):
     eng_lg = rec[:, h * w:].copy().view(np.float32)
     qi = next(n for n in g.nodes if n.op_type == "QuantizeLinear" and n.input[0] == g.input)
     s, zp = g.qparams[qi.output[0]]
+    if exact_n <= 0:
+        exact_n = len(crops)
     bad = 0
     for i in range(min(exact_n, len(crops))):
         x = reference_input(crops[i])
@@ -60,6 +62,10 @@ def main(q_onnx, f_onnx, raw, labels, exact_n=200):
     if bad:
         sys.exit(f"check_drum: {bad} of {min(exact_n, len(crops))} crops differ from the reference")
     print(f"check_drum: {min(exact_n, len(crops))} crops: input and logits identical to the reference")
+
+    if not f_onnx:
+        return
+    import onnxruntime as ort  # scoring only: the release build has no float model
 
     L = [json.loads(l) for l in open(labels)]
     sess = ort.InferenceSession(f_onnx, providers=["CPUExecutionProvider"])

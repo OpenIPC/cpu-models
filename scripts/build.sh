@@ -9,7 +9,12 @@
 #   4. check both against the reference arithmetic on 40 crops, bit for bit:
 #      nothing below is measured on an engine that does not compute the model
 #   5. measure the presets on the labelled crops (points.py) and write
-#      person.json, points.md and SHA256SUMS
+#      person.json and points.md
+#   6. the drum model the same way: export drum.qnet, run it on the host and
+#      on ARMv7 NEON under qemu over crops cut from the same COCO images
+#      (drum_crops.py), check both against the reference bit for bit, input
+#      and logits, and require the two to agree byte for byte
+#   7. SHA256SUMS of everything published
 #
 # Needs Python 3.11 with requirements.txt, gcc, gcc-arm-linux-gnueabihf and
 # qemu-user-static.
@@ -56,4 +61,22 @@ cmp "$out/dets.txt" "$out/dets.arm.txt" || { echo "ARM and host detections diffe
 
 python3 "$src/tools/points.py" "$out/eval/labels.json" "$out/dets.txt" \
 	"$out/person.json" "$out/points.md"
-cd "$out" && sha256sum person.qnet person.json > SHA256SUMS && cat SHA256SUMS
+
+# The drum model: a classifier, so its whole output is checked, every crop.
+python3 "$src/tools/export_qnet.py" "$src/models/drum/model.onnx" "$out/drum.qnet"
+gcc "${cflags[@]}" -o "$out/classify" "$src/tools/meters/classify.c" "$src/engine/qnet.c" -lm
+"${arm[@]}" -o "$out/classify.arm" "$src/tools/meters/classify.c" "$src/engine/qnet.c" -lm
+python3 "$src/tools/meters/drum_crops.py" "$coco" "$out/drum_crops.raw" 400
+for target in host arm; do
+	run=("$out/classify")
+	[ "$target" = arm ] && run=(qemu-arm-static "$out/classify.arm")
+	rm -f "$out/drum_crops.raw.out"
+	"${run[@]}" "$out/drum.qnet" "$out/drum_crops.raw"
+	echo "== drum exactness: $target"
+	python3 "$src/tools/meters/check_drum.py" "$src/models/drum/model.onnx" "$out/drum_crops.raw" 0
+	mv "$out/drum_crops.raw.out" "$out/drum_crops.$target.out"
+done
+cmp "$out/drum_crops.host.out" "$out/drum_crops.arm.out" ||
+	{ echo "ARM and host drum outputs differ"; exit 1; }
+
+cd "$out" && sha256sum person.qnet person.json drum.qnet > SHA256SUMS && cat SHA256SUMS

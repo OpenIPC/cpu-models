@@ -58,6 +58,12 @@ jobs:
             echo "anything was measured. Measured on labelled crops of COCO val2017:"
             echo
             cat out/points.md
+            echo
+            echo "\`drum.qnet\` reads one drum of a utility meter's odometer: a 20x32 luma"
+            echo "crop in, 20 half steps of a digit out. Its host engine and ARMv7 NEON"
+            echo "build were checked against the reference bit for bit, input and every"
+            echo "logit, on 400 crops, and against each other byte for byte. What it was"
+            echo "trained on, and its attribution, are in models/drum/SOURCES.md."
           } > notes.md
           gh release create "$TAG" --target "${{ github.sha }}" --title "$TAG" \
-            --notes-file notes.md out/person.qnet out/person.json out/SHA256SUMS out/points.md
+            --notes-file notes.md out/person.qnet out/person.json out/drum.qnet out/SHA256SUMS out/points.md

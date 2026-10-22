@@ -32,6 +32,11 @@ with a new tag), never by hand. A release carries:
   - `fewerFalseAlarms`: the F0.5 optimum;
   - `catchEverything`: the highest threshold keeping recall at 0.90, else the
     F2 optimum;
+- `drum.qnet`: the drum model (`models/drum/`), which reads one drum of a
+  utility meter's odometer, a 20x32 luma crop in and 20 half steps of a digit
+  out. Its host and ARMv7 NEON engines are checked against the reference bit
+  for bit, input and every logit, on 400 crops cut from the same COCO images
+  (`tools/meters/drum_crops.py`), and against each other byte for byte;
 - `points.md`: what each preset achieves; and `SHA256SUMS`.
 
 ## Building
