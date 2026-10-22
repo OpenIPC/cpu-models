@@ -92,6 +92,15 @@ static inline int8_t clamp8(int32_t v) {
     return (int8_t)(v < -128 ? -128 : v > 127 ? 127 : v);
 }
 
+/* A quotient already rounded onto the input's int8 grid, with its zero point.
+ * Bounded before the conversion: a blob may carry any positive scale, and a
+ * tiny one takes the quotient past what an int32 holds, or to infinity.
+ * Every in-range value is unchanged. */
+static inline int8_t quant_in(double q, int zp) {
+    q = q < -512 ? -512 : q > 512 ? 512 : q;   /* NaN cannot reach here */
+    return clamp8((int32_t)q + zp);
+}
+
 /* ---- loading --------------------------------------------------------------- */
 
 typedef struct {
@@ -179,8 +188,8 @@ static bool parse(QNet *n, Rd *r) {
     for (int v = 0; v < 256; v++) {
         const float y = ((float)v - 16.0f) * ky - 1.0f;
         const float c = ((float)v - 128.0f) * kc;
-        n->lut_y[v] = clamp8((int32_t)rintf(y / in_scale) + in_zp);
-        n->lut_c[v] = clamp8((int32_t)rintf(c / in_scale) + in_zp);
+        n->lut_y[v] = quant_in(rintf(y / in_scale), in_zp);
+        n->lut_c[v] = quant_in(rintf(c / in_scale), in_zp);
     }
     n->n_t = (int)u32(r);
     if (r->bad || n->n_t <= 0 || n->n_t > MAX_TENSORS)
@@ -910,7 +919,7 @@ int qnet_classify(QNet *n, const uint8_t *y, int ystride, float *out, int max) {
     for (int j = 0; j < h; j++)
         for (int i = 0; i < w; i++) {
             const double v = (y[(size_t)j * ystride + i] - mean) / sd / n->in_scale;
-            in[(size_t)j * w + i] = clamp8((int32_t)rint(v) + n->in_zp);
+            in[(size_t)j * w + i] = quant_in(rint(v), n->in_zp);
         }
     run_ops(n);
     int k = 0;
