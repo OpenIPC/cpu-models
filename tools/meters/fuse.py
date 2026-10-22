@@ -29,8 +29,13 @@
 # an 8 as a 1 every frame is confident and wrong, and only the other cameras
 # and time can tell it so; its weight is how much it is believed after.
 #
+# Dials: where a meter has red dials, the clearest camera's chain (dials.join)
+# says how far into its digit the last drum has turned, and the reading is
+# given to the dials' resolution in the meter's own unit ("value").
+#
 # Scored against the cameras' labelled readings: each camera alone, cameras
-# together, and cameras together over time, on the drums above the last.
+# together, and cameras together over time, on the drums above the last;
+# and the values over time are counted for any that went backwards.
 import itertools
 import json
 import math
@@ -39,6 +44,7 @@ import sys
 import numpy as np
 
 from common import CLASSES, load_camera, reading_at
+from dials import join, with_drum
 
 STEP = 300          # seconds within which frames of one meter are one moment
 TOPK = 40           # candidates kept per camera frame
@@ -182,6 +188,7 @@ def main(path, *args):
             return None if r is None or "?" in r[:-1] or "r" in r[:-1] else r[:-1]
 
         rows = report.setdefault(mid, {"alone": [0, 0], "cameras": [0, 0], "cameras+time": [0, 0]})
+        prev_value = prev_at = prev_fine = None
         for t, st in enumerate(steps):
             plain = np.array([sum(score(int(H), f["logp"]) for f in st) for H in cand[t]])
             Ht = int(cand[t][int(np.argmax(plain))])
@@ -189,8 +196,41 @@ def main(path, *args):
             s = np.sort(sc[t])[::-1]  # trusted scores
             margin = float(s[0] - s[1]) if len(s) > 1 else math.inf
             tr = truth(st[0])
+            mt = meters[(st[0]["camera"], st[0]["meter"])]
+            unit = mt.get("last_unit", 1.0)
+            V, half = divmod(Hv, 2)
+            frac, dial_cam = None, None
+            for f in sorted(st, key=lambda f: -sum(d[1] for d in f.get("dials", []))):
+                frac = join(f.get("dials", []), unit) if f.get("dials") else None
+                if frac is not None:
+                    dial_cam = f["camera"]
+                    break
+            last = V % 10 + 0.5 * half
+            if frac is None:
+                value = (V - V % 10 + last) * unit
+            else:
+                # The drum reads "between digits" for much of its roll, so with
+                # the dials near 0 it can be a digit late. Of the digits the drum
+                # allows, take the one that keeps the meter going forward.
+                base = V - V % 10 + with_drum(last, frac)
+                opts = [base - 1, base, base + 1]
+                if prev_value is None:
+                    value = base * unit
+                else:
+                    fwd = [o for o in opts if o * unit >= prev_value - 1e-9]
+                    value = (min(fwd) if fwd else base) * unit
+            # consumption since the moment before, per hour, in the meter's unit
+            # (only between readings of one resolution: a dial-fine value
+            # against a drum-only one is the drum's rounding, not consumption)
+            rate_h = None
+            fine = frac is not None
+            if prev_value is not None and prev_fine == fine and st[0]["at"] > prev_at:
+                rate_h = (value - prev_value) / ((st[0]["at"] - prev_at) / 3600)
+            prev_value, prev_at, prev_fine = value, st[0]["at"], fine
             row = {"meter_id": mid, "at": st[0]["at"], "cameras": [f["camera"] for f in st],
-                   "reading": fmt(Hv, n), "cameras_only": fmt(Ht, n), "margin": round(margin, 2),
+                   "reading": fmt(Hv, n), "value": round(value, 6), "dials_from": dial_cam,
+                   "per_hour": None if rate_h is None else round(rate_h, 6),
+                   "cameras_only": fmt(Ht, n), "margin": round(margin, 2),
                    "alone": {f["camera"]: fmt(f["alone"], n) for f in st}, "truth": tr}
             fused_rows.append(row)
             if tr is None:
@@ -203,7 +243,9 @@ def main(path, *args):
             rows["cameras+time"][0] += 1
             rows["cameras+time"][1] += fmt(Hv, n)[:n - 1] == tr
     for mid, r in report.items():
-        print(mid, {k: f"{v[1]}/{v[0]}" for k, v in r.items()})
+        vals = [row["value"] for row in fused_rows if row["meter_id"] == mid]
+        back = sum(b < a - 1e-9 for a, b in zip(vals, vals[1:]))
+        print(mid, {k: f"{v[1]}/{v[0]}" for k, v in r.items()}, f"backwards {back}/{max(len(vals) - 1, 0)}")
     if out_path:
         with open(out_path, "w") as f:
             for r in fused_rows:

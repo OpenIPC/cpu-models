@@ -9,6 +9,9 @@
 # makes a picture of pure gain noise (structure no larger than the pixel
 # noise), and an unlit cupboard a black one (no contrast on the drums). The
 # model would read digits into either, with confidence.
+#
+# A meter with red dials (its "dials", see dials.py) gets each needle's value
+# and how clear it was, alongside its drums.
 import json
 import sys
 
@@ -17,6 +20,7 @@ import numpy as np
 import torch
 
 from common import cells_at, frame_luma, harvested, load_camera, rectify
+from dials import read_dial
 from train_drum import DrumNet, standardise
 
 
@@ -57,7 +61,9 @@ def main(model, out, *sources):
                                         "at": rec["at"], "frame_luma": rec["luma"],
                                         "snr": round(ratio, 2), "contrast": round(contrast, 1),
                                         "readable": ratio >= MIN_SNR and contrast >= MIN_CONTRAST,
-                                        "p": np.round(p, 5).tolist()}) + "\n")
+                                        "p": np.round(p, 5).tolist(),
+                                        "dials": [[round(v, 3), round(c, 2), d["mult"]] for d in m.get("dials", [])
+                                                  for v, c in [read_dial(y, cells, d)[:2]]]}) + "\n")
                     n += 1
     print(f"{n} meter frames read")
 

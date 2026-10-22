@@ -108,7 +108,8 @@
    ],
    "unit": "m3",
    "max_per_hour": 3,
-   "typical_per_hour": 0.1
+   "typical_per_hour": 0.1,
+   "last_unit": 1.0
   },
   {
    "name": "mid",
@@ -214,7 +215,42 @@
    ],
    "unit": "m3",
    "max_per_hour": 3,
-   "typical_per_hour": 0.1
+   "typical_per_hour": 0.1,
+   "last_unit": 1.0,
+   "dials": [
+    {
+     "mult": 0.1,
+     "centre": [
+      8.5,
+      4.75
+     ],
+     "radius": 1.6
+    },
+    {
+     "mult": 0.01,
+     "centre": [
+      6.5,
+      8.25
+     ],
+     "radius": 1.6
+    },
+    {
+     "mult": 0.001,
+     "centre": [
+      2.9,
+      9.7
+     ],
+     "radius": 1.6
+    },
+    {
+     "mult": 0.0001,
+     "centre": [
+      -1.0,
+      8.25
+     ],
+     "radius": 1.6
+    }
+   ]
   },
   {
    "name": "right",
@@ -320,7 +356,34 @@
    ],
    "unit": "m3",
    "max_per_hour": 3,
-   "typical_per_hour": 0.1
+   "typical_per_hour": 0.1,
+   "last_unit": 1.0,
+   "dials": [
+    {
+     "mult": 0.01,
+     "centre": [
+      8.0,
+      10.0
+     ],
+     "radius": 1.6
+    },
+    {
+     "mult": 0.001,
+     "centre": [
+      4.0,
+      11.25
+     ],
+     "radius": 1.6
+    },
+    {
+     "mult": 0.0001,
+     "centre": [
+      0.4,
+      9.5
+     ],
+     "radius": 1.6
+    }
+   ]
   }
  ]
 }

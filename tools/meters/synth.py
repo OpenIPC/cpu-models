@@ -33,7 +33,7 @@ from multiprocessing import Pool
 import cv2
 import numpy as np
 
-from common import cells_at, frame_luma, harvested, load_camera, pos_class, rectify
+from common import cells_at, face_homography, frame_luma, harvested, load_camera, pos_class, rectify
 from glyphs import drum_window
 
 PATCH = 192          # sensor pixels a side
@@ -182,18 +182,8 @@ def proc_face(rng, n, fontfit):
 def homography_frontal(quads_img, CH):
     """Map frame pixels to a frontal face in which the cells sit on a row,
     CW x CH each at their measured spacing."""
-    q = np.float32(quads_img)
-    n = len(q)
-    centres = q.mean(1)
-    span = np.linalg.norm(centres[-1] - centres[0]) / max(n - 1, 1)
-    wbox = np.mean([np.linalg.norm(c[1] - c[0]) for c in q])
-    pitch = CW * span / wbox
-    dst = []
-    for i in range(n):
-        x = i * pitch
-        dst += [[x, 0], [x + CW, 0], [x + CW, CH], [x, CH]]
-    h, _ = cv2.findHomography(q.reshape(-1, 2), np.float32(dst))
-    return h, pitch
+    h, pitch, _ = face_homography(quads_img)
+    return np.diag([CW, CW, 1.0]) @ h, CW * pitch
 
 
 def real_face(rng, frames, fontfit):

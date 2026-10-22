@@ -165,7 +165,18 @@
    "meter_id": "lab-valtec",
    "unit": "m3",
    "max_per_hour": 1500,
-   "typical_per_hour": 30
+   "typical_per_hour": 30,
+   "last_unit": 0.001,
+   "dials": [
+    {
+     "mult": 0.0001,
+     "centre": [
+      12.7,
+      7.25
+     ],
+     "radius": 1.6
+    }
+   ]
   }
  ]
 }

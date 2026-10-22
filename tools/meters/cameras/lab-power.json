@@ -163,7 +163,8 @@
    "meter_id": "lab-energomera",
    "unit": "kWh",
    "max_per_hour": 150,
-   "typical_per_hour": 15
+   "typical_per_hour": 15,
+   "last_unit": 0.1
   }
  ]
 }

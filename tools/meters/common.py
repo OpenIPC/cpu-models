@@ -80,6 +80,27 @@ def cells_at(meter, at):
     return meter.get("cells")
 
 
+def face_homography(quads):
+    """Frame pixels to the meter's face, in cell widths: the first drum cell
+    has its top left at (0, 0), each cell is 1 wide and as tall as the boxes
+    are, at their measured spacing. A dial or anything else printed on the
+    face is annotated in these units once and found again in any frame and
+    after any re-annotation of the cells. Returns (H, pitch, height)."""
+    q = np.float32(quads)
+    n = len(q)
+    centres = q.mean(1)
+    wbox = float(np.mean([np.linalg.norm(c[1] - c[0]) for c in q]))
+    hbox = float(np.mean([np.linalg.norm(c[3] - c[0]) for c in q]))
+    pitch = float(np.linalg.norm(centres[-1] - centres[0]) / max(n - 1, 1)) / wbox
+    ch = hbox / wbox
+    dst = []
+    for i in range(n):
+        x = i * pitch
+        dst += [[x, 0], [x + 1, 0], [x + 1, ch], [x, ch]]
+    h, _ = cv2.findHomography(q.reshape(-1, 2), np.float32(dst))
+    return h, pitch, ch
+
+
 def reading_at(meter, at):
     for r in meter["readings"]:
         if r["from"] <= at and (r["to"] is None or at < r["to"]):
